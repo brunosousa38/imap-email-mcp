@@ -4,9 +4,6 @@
   "description": "MCP server for Claude Code that provides email capabilities through IMAP/SMTP. Read, search, compose, and manage emails from any IMAP provider.",
   "type": "module",
   "main": "index.js",
-  "bin": {
-    "imap-email-mcp": "index.js"
-  },
   "scripts": {
     "start": "node index.js"
   },
@@ -42,7 +39,10 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.10.0",
+    "express": "^4.19.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^8.0.0",
     "imap-simple": "^5.1.0",
     "mailparser": "^3.7.2",
     "nodemailer": "^6.9.16"

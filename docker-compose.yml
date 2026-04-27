@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  mcp-email:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - internal
+    # No ports exposed to the host: all traffic must pass through Caddy,
+    # ensuring TLS termination and security headers are always applied
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
