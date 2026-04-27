@@ -1,53 +1,192 @@
 # IMAP Email MCP Server
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that provides email capabilities to Claude Code, Claude Desktop, Cursor, and other MCP-compatible AI tools. Connect to any IMAP/SMTP email provider to read, search, compose, and manage emails directly from your AI assistant.
+A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that gives Claude access to any IMAP/SMTP mailbox. Read, search, compose, send, and manage emails using natural language.
 
-## Quick Start
+This server runs as a **secured HTTPS service** — it is designed to be self-hosted in Docker and exposed on the internet so that Claude (or any MCP-compatible client) can reach it remotely.
+
+---
+
+## Architecture
+
+```
+Claude (MCP client)
+        │  HTTPS + Bearer token
+        ▼
+Reverse proxy (Caddy or Traefik)
+        │  HTTP  :3000  (internal)
+        ▼
+Express HTTP server
+  ├─ Helmet (security headers)
+  ├─ Rate limiter (60 req/min)
+  └─ Bearer token auth (MCP_API_KEY)
+        │
+  MCP StreamableHTTP transport
+        │
+  IMAP / SMTP (your email provider)
+```
+
+---
+
+## Prerequisites
+
+- Docker and Docker Compose installed on the host
+- A domain name pointing to the host (A/AAAA record)
+- An **app password** from your email provider (never use your main password)
+
+---
+
+## Deployment
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/brunosousa38/imap-email-mcp.git
+cd imap-email-mcp
+cp .env.example .env
+```
+
+Edit `.env` and fill in every value (see [Configuration](#configuration) below).
+
+```bash
+# Generate a strong API key
+openssl rand -hex 32
+```
+
+Paste the output as `MCP_API_KEY` in your `.env`.
+
+---
+
+### Option A — Caddy (recommended, includes automatic TLS)
+
+Use this if you have no existing reverse proxy on the host. Caddy handles TLS certificates from Let's Encrypt automatically.
+
+**`.env` variables required:**
+```env
+DOMAIN=mcp.example.com
+```
+
+**Start:**
+```bash
+docker compose up -d
+```
+
+Caddy will obtain a TLS certificate on first start. The server will be available at `https://mcp.example.com/mcp`.
+
+---
+
+### Option B — Traefik (if a Traefik instance already runs on the host)
+
+Use this when Traefik is already managing routing on the host. The app container joins the existing Traefik network via labels.
+
+**`.env` variables required:**
+```env
+DOMAIN=mcp.example.com
+TRAEFIK_NETWORK=traefik_proxy   # name of the existing Traefik Docker network
+CERT_RESOLVER=letsencrypt       # name of the Let's Encrypt resolver in your Traefik config
+```
+
+**Start:**
+```bash
+docker compose -f docker-compose.traefik.yml up -d
+```
+
+HTTP → HTTPS redirect is configured automatically via Traefik labels.
+
+---
+
+### Verify the deployment
+
+```bash
+# Health check (no authentication required)
+curl https://mcp.example.com/health
+# Expected: {"status":"ok","version":"1.0.0"}
+```
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill in all values.
+
+### Authentication
+
+| Variable | Required | Description |
+|---|---|---|
+| `MCP_API_KEY` | **Yes** | Bearer token Claude uses to authenticate. Generate with `openssl rand -hex 32`. |
+
+### HTTP server
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | Internal HTTP port (not exposed directly — only via the reverse proxy). |
+
+### Reverse proxy
+
+| Variable | Required for | Description |
+|---|---|---|
+| `DOMAIN` | Both | Public hostname (e.g. `mcp.example.com`). |
+| `TRAEFIK_NETWORK` | Traefik only | Name of the existing external Docker network used by Traefik. |
+| `CERT_RESOLVER` | Traefik only | Name of the Let's Encrypt resolver configured in Traefik. |
+
+### IMAP (reading emails)
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `IMAP_USER` | **Yes** | — | Your email address. |
+| `IMAP_PASSWORD` | **Yes** | — | App password (not your main password). |
+| `IMAP_HOST` | **Yes** | — | IMAP server hostname. |
+| `IMAP_PORT` | No | `993` | IMAP port. |
+| `IMAP_TLS` | No | `true` | Enable TLS. Set to `false` only for local testing. |
+
+### SMTP (sending emails)
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `SMTP_HOST` | No | same as `IMAP_HOST` | SMTP server hostname. |
+| `SMTP_PORT` | No | `465` | SMTP port. |
+| `SMTP_SECURE` | No | `true` | Use implicit TLS (port 465). Set to `false` for STARTTLS (port 587). |
+| `SMTP_USER` | No | same as `IMAP_USER` | SMTP username if different from IMAP. |
+| `SMTP_PASSWORD` | No | same as `IMAP_PASSWORD` | SMTP password if different from IMAP. |
+
+### Provider quick reference
+
+| Provider | `IMAP_HOST` | `SMTP_HOST` | Notes |
+|---|---|---|---|
+| **Gmail** | `imap.gmail.com` | `smtp.gmail.com` | [Create App Password](https://myaccount.google.com/apppasswords) — 2FA must be enabled |
+| **Outlook / Microsoft 365** | `outlook.office365.com` | `smtp.office365.com` | `SMTP_PORT=587`, `SMTP_SECURE=false` |
+| **Yahoo** | `imap.mail.yahoo.com` | `smtp.mail.yahoo.com` | Generate App Password in Account Security settings |
+| **Fastmail** | `imap.fastmail.com` | `smtp.fastmail.com` | App Password from Privacy & Security |
+| **iCloud** | `imap.mail.me.com` | `smtp.mail.me.com` | [Generate App Password](https://appleid.apple.com/) |
+
+---
+
+## Connecting Claude
+
+Once the server is running, add it as an MCP server in Claude.
 
 ### Claude Code (CLI)
 
-**Important:** Claude Code CLI uses `claude mcp add`, not config files.
-
 ```bash
-claude mcp add imap-email -s user \
-  -e IMAP_USER=you@example.com \
-  -e IMAP_PASSWORD='your-app-password' \
-  -e IMAP_HOST=imap.example.com \
-  -- npx -y imap-email-mcp
+claude mcp add imap-email \
+  --transport http \
+  --url https://mcp.example.com/mcp \
+  --header "Authorization: Bearer YOUR_MCP_API_KEY"
 ```
 
-> **Note:** If your password contains special shell characters (`%`, `^`, `*`, `$`, `!`, etc.), wrap it in single quotes as shown above.
-
-> **Note:** Restart Claude Code after adding an MCP for the new tools to become available.
-
-Verify with:
+Verify:
 ```bash
 claude mcp list
 claude mcp get imap-email
 ```
 
-Remove with:
+Remove:
 ```bash
-claude mcp remove imap-email -s user
-```
-
-### Cursor
-
-Add new MCP server:
-- **Name:** `imap-email`
-- **Type:** `command`
-- **Command:** `npx -y imap-email-mcp`
-
-Then set environment variables in Cursor's MCP settings:
-```
-IMAP_USER=your-email@example.com
-IMAP_PASSWORD=your-app-password
-IMAP_HOST=imap.example.com
+claude mcp remove imap-email
 ```
 
 ### Claude Desktop
 
-Add to your config file:
+Edit the config file:
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
@@ -55,124 +194,101 @@ Add to your config file:
 {
   "mcpServers": {
     "imap-email": {
-      "command": "npx",
-      "args": ["-y", "imap-email-mcp"],
-      "env": {
-        "IMAP_USER": "your-email@example.com",
-        "IMAP_PASSWORD": "your-app-password",
-        "IMAP_HOST": "imap.example.com"
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_API_KEY"
       }
     }
   }
 }
 ```
 
-## Features
+Restart Claude Desktop after saving.
 
-- **Read emails** - List and read emails from any folder
-- **Search** - Search by subject, sender, or body content
-- **Compose** - Create and save email drafts
-- **Send** - Send emails directly via SMTP
-- **Manage drafts** - List, read, update, and delete drafts
-- **Delete emails** - Remove unwanted messages
-- **Multi-provider support** - Works with Gmail, Outlook, Yahoo, Fastmail, and any standard IMAP provider
-
-## Configuration
-
-### Required Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `IMAP_USER` | Your email address |
-| `IMAP_PASSWORD` | App password (not your main password!) |
-| `IMAP_HOST` | IMAP server hostname |
-
-### Optional Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `IMAP_PORT` | `993` | IMAP port |
-| `IMAP_TLS` | `true` | Use TLS |
-| `SMTP_HOST` | Same as IMAP_HOST | SMTP server hostname |
-| `SMTP_PORT` | `465` | SMTP port |
-| `SMTP_SECURE` | `true` | Use secure SMTP |
-
-### Provider Settings
-
-| Provider | IMAP_HOST | SMTP_HOST | Notes |
-|----------|-----------|-----------|-------|
-| **Gmail** | `imap.gmail.com` | `smtp.gmail.com` | [Create App Password](https://myaccount.google.com/apppasswords) |
-| **Outlook** | `outlook.office365.com` | `smtp.office365.com` | Use port 587, SMTP_SECURE=false |
-| **Yahoo** | `imap.mail.yahoo.com` | `smtp.mail.yahoo.com` | Generate App Password in settings |
-| **Fastmail** | `imap.fastmail.com` | `smtp.fastmail.com` | App Password from Privacy & Security |
-| **iCloud** | `imap.mail.me.com` | `smtp.mail.me.com` | [Generate App Password](https://appleid.apple.com/) |
+---
 
 ## Available Tools
 
 | Tool | Description |
-|------|-------------|
-| `list_folders` | List all email folders/mailboxes |
-| `list_emails` | List emails with optional filtering |
-| `get_email` | Get full email content by UID |
-| `search_emails` | Search by subject, sender, or body |
+|---|---|
+| `list_folders` | List all folders/mailboxes in the account |
+| `list_emails` | List emails from a folder, with optional filters (unread only, since date, limit) |
+| `get_email` | Get full content of an email by UID (text, HTML, attachments list) |
+| `search_emails` | Search by subject, sender, or body text |
 | `list_drafts` | List all draft emails |
 | `get_draft` | Get a specific draft by UID |
-| `create_draft` | Create a new email draft |
-| `update_draft` | Update an existing draft |
-| `send_email` | Send an email directly |
-| `delete_email` | Delete an email by UID |
+| `create_draft` | Create a new draft email |
+| `update_draft` | Replace an existing draft |
+| `send_email` | Send an email via SMTP |
+| `delete_email` | Permanently delete an email by UID |
+
+---
 
 ## Usage Examples
 
-Once configured, use natural language:
+Once connected, use natural language with Claude:
 
-- "Check my inbox for unread emails"
-- "Search for emails from john@example.com"
-- "Create a draft email to sarah@example.com about the meeting tomorrow"
-- "Show me my drafts folder"
+- *"Check my inbox for unread emails"*
+- *"Search for emails from alice@example.com about the budget"*
+- *"Create a draft to bob@example.com — subject: Meeting recap, summarise our last discussion"*
+- *"Send an email to the team at team@example.com with the agenda for Friday"*
+- *"Delete email UID 4521 from my Spam folder"*
+- *"List my drafts and show me the most recent one"*
 
-## Security Best Practices
+---
 
-1. **Use App Passwords** - Never use your main account password
-2. **Environment Variables** - Store credentials in env vars, not in code
-3. **Review Before Sending** - Use `create_draft` instead of `send_email` to review first
+## Security
+
+The server implements several layers of protection:
+
+| Layer | Mechanism |
+|---|---|
+| **Transport** | HTTPS enforced by Caddy or Traefik (TLS 1.2+, Let's Encrypt) |
+| **Authentication** | Bearer token (`MCP_API_KEY`) checked on every MCP request via timing-safe comparison |
+| **Rate limiting** | 60 requests per minute per IP |
+| **Security headers** | `helmet()` middleware (HSTS, X-Frame-Options, X-Content-Type-Options, …) |
+| **Input validation** | UID must be a positive integer; folder names block IMAP control characters; `to`/`cc`/`bcc` validated as email addresses; text fields capped at 10 000 chars |
+| **Header injection** | RFC 2822 headers sanitized (CR/LF stripped) before raw message construction |
+| **Container** | Non-root user (`node`, uid 1000); multi-stage Alpine image; app port not exposed to the host |
+| **Network isolation** | App container reachable only via the reverse proxy (no direct port mapping) |
+
+**Recommended practices:**
+- Use an **app password** from your provider — never your main account password.
+- Rotate `MCP_API_KEY` periodically (`openssl rand -hex 32`).
+- Prefer `create_draft` over `send_email` when you want to review before sending.
+
+---
 
 ## Troubleshooting
 
-**Authentication failed**
-- Verify your app password is correct
-- Ensure IMAP access is enabled in your email provider's settings
+**`curl /health` returns connection refused**
+- Check that the container is running: `docker compose ps`
+- Check logs: `docker compose logs mcp-email`
+
+**401 Unauthorized**
+- Verify the `Authorization: Bearer <key>` header matches `MCP_API_KEY` in `.env` exactly.
+
+**403 Forbidden**
+- `MCP_API_KEY` is not set in `.env`. The server refuses all requests when no key is configured.
+
+**IMAP authentication failed**
+- Confirm IMAP access is enabled in your provider's settings (Gmail: *Less secure app access* or App Passwords; Outlook: Modern Auth settings).
+- Verify the app password — copy-paste it, do not retype.
 
 **Drafts folder not found**
-- The server tries common names (`Drafts`, `INBOX.Drafts`, `[Gmail]/Drafts`)
-- Your provider may use a different folder name
+- The server tries `Drafts`, `INBOX.Drafts`, `[Gmail]/Drafts`, `Draft`. If your provider uses another name, check with `list_folders` and open an issue.
 
-**Connection timeout**
-- Check your `IMAP_HOST` is correct
-- Verify port 993 is not blocked by firewall
+**TLS certificate not issued (Caddy)**
+- Ensure port 80 is reachable from the internet (Let's Encrypt HTTP-01 challenge).
+- Check Caddy logs: `docker compose logs caddy`
 
-## Alternative Installation
+**Traefik not routing to the container**
+- Confirm the container joined the correct network: `docker network inspect $TRAEFIK_NETWORK`
+- Verify `CERT_RESOLVER` matches the name in your Traefik static config.
 
-### Install globally
-```bash
-npm install -g imap-email-mcp
-imap-email-mcp
-```
-
-### Clone and run
-```bash
-git clone https://github.com/jdickey1/imap-email-mcp.git
-cd imap-email-mcp
-npm install
-node index.js
-```
+---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Links
-
-- [npm package](https://www.npmjs.com/package/imap-email-mcp)
-- [GitHub repo](https://github.com/jdickey1/imap-email-mcp)
-- [MCP Protocol](https://modelcontextprotocol.io/)
+MIT — see [LICENSE](LICENSE) for details.
