@@ -83,6 +83,21 @@ function validateTextFields(args, fields) {
   }
 }
 
+// Loose but sufficient check: each address must be user@domain.tld with no whitespace or commas
+// Nodemailer parses further, but we reject obviously malformed input before it reaches the SMTP layer
+const EMAIL_RE = /^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/;
+
+function validateEmailAddresses(field, value) {
+  if (!value) return;
+  const addresses = String(value).split(',').map(a => a.trim()).filter(Boolean);
+  if (addresses.length === 0) throw new Error(`"${field}" contains no valid addresses`);
+  for (const addr of addresses) {
+    if (!EMAIL_RE.test(addr)) {
+      throw new Error(`Invalid email address in "${field}": ${addr}`);
+    }
+  }
+}
+
 // Factory so each HTTP request gets a fresh Server instance tied to its own transport
 function createMCPServer() {
   const server = new Server(
@@ -407,6 +422,9 @@ function createMCPServer() {
         }
 
         case 'create_draft': {
+          validateEmailAddresses('to', args.to);
+          if (args.cc) validateEmailAddresses('cc', args.cc);
+          if (args.bcc) validateEmailAddresses('bcc', args.bcc);
           validateTextFields(args, ['subject', 'body', 'html']);
           const connection = await connectIMAP();
           try {
@@ -429,6 +447,9 @@ function createMCPServer() {
 
         case 'update_draft': {
           const uid = validateUid(args.uid);
+          validateEmailAddresses('to', args.to);
+          if (args.cc) validateEmailAddresses('cc', args.cc);
+          if (args.bcc) validateEmailAddresses('bcc', args.bcc);
           validateTextFields(args, ['subject', 'body', 'html']);
           const connection = await connectIMAP();
           try {
@@ -454,7 +475,10 @@ function createMCPServer() {
         }
 
         case 'send_email': {
-          validateTextFields(args, ['subject', 'body', 'html']);
+          validateEmailAddresses('to', args.to);
+          if (args.cc) validateEmailAddresses('cc', args.cc);
+          if (args.bcc) validateEmailAddresses('bcc', args.bcc);
+          validateTextFields(args, ['to', 'subject', 'body', 'html']);
           if (!SMTP_CONFIG.host) {
             return {
               content: [{ type: 'text', text: 'Error: SMTP_HOST not configured. Cannot send emails.' }],
