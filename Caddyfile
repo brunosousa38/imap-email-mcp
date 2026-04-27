@@ -1,5 +1,5 @@
-# Replace your-domain.com with your actual domain before deploying
-your-domain.com {
+# DOMAIN is read from the environment (set in .env or shell before starting Caddy)
+{$DOMAIN} {
     # TLS certificate obtained and renewed automatically via Let's Encrypt
 
     header {

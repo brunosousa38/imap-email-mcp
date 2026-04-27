@@ -1,0 +1,45 @@
+version: '3.8'
+
+# Alternative deployment when a Traefik instance is already running on the host.
+# Usage: docker compose -f docker-compose.traefik.yml up -d
+#
+# Required variables in .env:
+#   DOMAIN            - public hostname (e.g. mcp.example.com)
+#   TRAEFIK_NETWORK   - name of the existing external Traefik network (e.g. traefik_proxy)
+#   CERT_RESOLVER     - name of the Let's Encrypt resolver configured in Traefik (e.g. letsencrypt)
+
+services:
+  mcp-email:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    labels:
+      - "traefik.enable=true"
+
+      # ---- HTTPS router ----
+      - "traefik.http.routers.mcp-email.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.mcp-email.entrypoints=websecure"
+      - "traefik.http.routers.mcp-email.tls=true"
+      - "traefik.http.routers.mcp-email.tls.certresolver=${CERT_RESOLVER}"
+
+      # ---- Service (port interne du container) ----
+      - "traefik.http.services.mcp-email.loadbalancer.server.port=3000"
+
+      # ---- Redirect HTTP → HTTPS ----
+      - "traefik.http.routers.mcp-email-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.mcp-email-http.entrypoints=web"
+      - "traefik.http.routers.mcp-email-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+
+    networks:
+      - traefik_proxy   # réseau partagé avec Traefik
+      - internal        # réseau isolé : le container n'est pas joignable directement
+
+networks:
+  traefik_proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK}   # nom du réseau Traefik existant sur le host
+
+  internal:
+    driver: bridge
