@@ -9,6 +9,7 @@ import nodemailer from 'nodemailer';
 import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
 
 const IMAP_CONFIG = {
   imap: {
@@ -55,6 +56,21 @@ function validateUid(uid) {
     throw new Error('uid must be a positive integer');
   }
   return n;
+}
+
+// Block characters that can break IMAP protocol framing (RFC 3501 §9)
+function validateFolder(folder) {
+  if (/[\x00\r\n"\\]/.test(folder)) {
+    throw new Error('Invalid folder name');
+  }
+  return folder;
+}
+
+// YYYY-MM-DD only; anything else would cause unpredictable IMAP search behavior
+function validateDate(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    throw new Error('since_date must be in YYYY-MM-DD format');
+  }
 }
 
 const TEXT_FIELD_MAX = 10000;
@@ -235,14 +251,17 @@ function createMCPServer() {
         }
 
         case 'list_emails': {
-          const folder = args.folder || 'INBOX';
+          const folder = validateFolder(args.folder || 'INBOX');
           const limit = args.limit || 20;
           const connection = await connectIMAP();
           try {
             await connection.openBox(folder);
             let searchCriteria = ['ALL'];
             if (args.unseen_only) searchCriteria = ['UNSEEN'];
-            if (args.since_date) searchCriteria = [['SINCE', args.since_date]];
+            if (args.since_date) {
+              validateDate(args.since_date);
+              searchCriteria = [['SINCE', args.since_date]];
+            }
             const fetchOptions = { bodies: ['HEADER.FIELDS (FROM TO SUBJECT DATE)'], struct: true };
             const messages = await connection.search(searchCriteria, fetchOptions);
             const results = messages.slice(-limit).reverse().map(msg => {
@@ -264,7 +283,7 @@ function createMCPServer() {
 
         case 'get_email': {
           const uid = validateUid(args.uid);
-          const folder = args.folder || 'INBOX';
+          const folder = validateFolder(args.folder || 'INBOX');
           const connection = await connectIMAP();
           try {
             await connection.openBox(folder);
@@ -302,7 +321,7 @@ function createMCPServer() {
         }
 
         case 'search_emails': {
-          const folder = args.folder || 'INBOX';
+          const folder = validateFolder(args.folder || 'INBOX');
           const limit = args.limit || 20;
           const connection = await connectIMAP();
           try {
@@ -463,7 +482,7 @@ function createMCPServer() {
 
         case 'delete_email': {
           const uid = validateUid(args.uid);
-          const folder = args.folder || 'INBOX';
+          const folder = validateFolder(args.folder || 'INBOX');
           const connection = await connectIMAP();
           try {
             await connection.openBox(folder);
@@ -514,15 +533,20 @@ async function findDraftsFolder(connection) {
   return 'Drafts';
 }
 
+// Strip CR/LF from header values to prevent RFC 2822 header injection
+function sanitizeHeader(value) {
+  return String(value ?? '').replace(/\r?\n/g, ' ').trim();
+}
+
 // Builds a minimal RFC 2822 raw message string
 function buildRawMessage({ from, to, cc, bcc, subject, body, html }) {
   const boundary = `----=_Part_${Date.now()}`;
   let msg = '';
-  msg += `From: ${from}\r\n`;
-  msg += `To: ${to}\r\n`;
-  if (cc) msg += `Cc: ${cc}\r\n`;
-  if (bcc) msg += `Bcc: ${bcc}\r\n`;
-  msg += `Subject: ${subject}\r\n`;
+  msg += `From: ${sanitizeHeader(from)}\r\n`;
+  msg += `To: ${sanitizeHeader(to)}\r\n`;
+  if (cc) msg += `Cc: ${sanitizeHeader(cc)}\r\n`;
+  if (bcc) msg += `Bcc: ${sanitizeHeader(bcc)}\r\n`;
+  msg += `Subject: ${sanitizeHeader(subject)}\r\n`;
   msg += `Date: ${new Date().toUTCString()}\r\n`;
   msg += `MIME-Version: 1.0\r\n`;
 
@@ -573,9 +597,12 @@ function authMiddleware(req, res, next) {
   }
 
   const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
-  if (!token || token !== apiKey) {
+  // Compare hashes so both branches take identical time regardless of token length
+  const tokenHash = crypto.createHash('sha256').update(token).digest();
+  const apiKeyHash = crypto.createHash('sha256').update(apiKey).digest();
+  if (!crypto.timingSafeEqual(tokenHash, apiKeyHash)) {
     return res.status(401).json({ error: 'Authentication failed' });
   }
 
