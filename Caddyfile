@@ -1,0 +1,14 @@
+# DOMAIN is read from the environment (set in .env or shell before starting Caddy)
+{$DOMAIN} {
+    # TLS certificate obtained and renewed automatically via Let's Encrypt
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        # Remove the Server header to avoid fingerprinting the reverse proxy
+        -Server
+    }
+
+    reverse_proxy mcp-email:3000
+}
