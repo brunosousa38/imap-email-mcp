@@ -94,6 +94,53 @@ HTTP → HTTPS redirect is configured automatically via Traefik labels.
 
 ---
 
+### Option C — Cloudflare Worker (proxy, no domain needed)
+
+Use this if you want to expose the server via Cloudflare's edge network without managing a domain or TLS yourself. The Worker acts as a secure proxy in front of the Docker container.
+
+**How it works:**
+```
+Claude → https://your-worker.workers.dev/mcp/TOKEN/ → Docker backend
+```
+
+The token is part of the URL — no custom header needed in Claude's configuration.
+
+**Prerequisites:** the Docker container must be running and publicly reachable (Option A or B above, or any public URL).
+
+**Setup:**
+
+1. Open `worker.js` and fill in the three variables at the top:
+
+```javascript
+const API_TOKEN   = 'your-secret-token';            // token in the URL
+const BACKEND_URL = 'https://your-docker.example.com'; // Docker public URL
+const BACKEND_KEY = 'your-docker-MCP_API_KEY';      // MCP_API_KEY from .env
+```
+
+2. Deploy:
+
+```bash
+npm install -g wrangler
+wrangler login
+wrangler deploy worker.js --name imap-mcp
+```
+
+Or paste `worker.js` directly into the [Cloudflare Workers dashboard](https://workers.cloudflare.com) — no CLI needed.
+
+3. Connect Claude using the Worker URL:
+
+```
+https://imap-mcp.your-account.workers.dev/mcp/YOUR_TOKEN/
+```
+
+**Verify:**
+```bash
+curl https://imap-mcp.your-account.workers.dev/health
+# Expected: {"status":"ok","worker":true}
+```
+
+---
+
 ### Verify the deployment
 
 ```bash
@@ -164,13 +211,28 @@ Copy `.env.example` to `.env` and fill in all values.
 
 Once the server is running, add it as an MCP server in Claude.
 
+The URL format depends on how you deployed:
+
+| Deployment | MCP URL |
+|---|---|
+| Caddy / Traefik (Docker) | `https://mcp.example.com/mcp` + Bearer header |
+| Cloudflare Worker | `https://imap-mcp.account.workers.dev/mcp/YOUR_TOKEN/` |
+
 ### Claude Code (CLI)
 
+**With Docker (Caddy or Traefik) — Bearer header:**
 ```bash
 claude mcp add imap-email \
   --transport http \
   --url https://mcp.example.com/mcp \
   --header "Authorization: Bearer YOUR_MCP_API_KEY"
+```
+
+**With Cloudflare Worker — token in URL, no header needed:**
+```bash
+claude mcp add imap-email \
+  --transport http \
+  --url https://imap-mcp.your-account.workers.dev/mcp/YOUR_TOKEN/
 ```
 
 Verify:
@@ -190,6 +252,7 @@ Edit the config file:
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
+**With Docker (Caddy or Traefik):**
 ```json
 {
   "mcpServers": {
@@ -199,6 +262,18 @@ Edit the config file:
       "headers": {
         "Authorization": "Bearer YOUR_MCP_API_KEY"
       }
+    }
+  }
+}
+```
+
+**With Cloudflare Worker:**
+```json
+{
+  "mcpServers": {
+    "imap-email": {
+      "type": "http",
+      "url": "https://imap-mcp.your-account.workers.dev/mcp/YOUR_TOKEN/"
     }
   }
 }
